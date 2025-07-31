@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Deprem İzleyici + Derinlik + Tsunami + Fay Hattı</title>
+
+<!-- Leaflet & MarkerCluster -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+
+<style>
+:root{--fg:#eaeaea;--glass:#272524d9;font-family:system-ui,sans-serif;color-scheme:dark;}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0b0b0b;color:var(--fg);height:100vh;display:flex;overflow:hidden}
+#map{flex:1;position:relative}
+.leaflet-container{background:#000}
+
+/* Arama kutusu --------------------------------------------------------------*/
+#searchBar{position:absolute;top:12px;left:50%;transform:translateX(-50%);
+  z-index:900;display:flex;width:min(95vw,500px);background:var(--glass);
+  backdrop-filter:blur(10px);border-radius:26px}
+#search{flex:1;padding:.55rem 3rem .55rem 1rem;border:none;background:transparent;
+  color:var(--fg);font-size:1rem;border-radius:26px;outline:none}
+#search::placeholder{color:#8b8b8b}
+#searchBar::after{content:"";position:absolute;right:18px;top:50%;transform:translateY(-50%);
+  width:22px;height:22px;opacity:.9;background:url('data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" fill="%23bbb" viewBox="0 0 24 24"%3E%3Cpath d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16 6.44 6.44 0 0013.73 14l.27.28h.79l5 4.99L20.49 19l-4.99-5zM10.5 14A4.5 4.5 0 1115 9.5 4.5 4.5 0 0110.5 14z"/%3E%3C/svg%3E') center/contain no-repeat}
+
+/* Liste panel ---------------------------------------------------------------*/
+#panel{position:absolute;left:0;right:0;bottom:0;z-index:850;
+  max-height:38vh;overflow-y:auto;background:#181716;border-top:1px solid #2a2826;
+  transform:translateY(100%);transition:transform .25s}
+#panel.show{transform:translateY(0)}
+#panel li{list-style:none;padding:.7rem 1rem;border-bottom:1px solid #272523;
+  display:flex;justify-content:space-between;gap:.8rem;font-size:.9rem;cursor:pointer}
+#panel li:hover{background:#22201e}
+.badge{padding:.15rem .6rem;border-radius:4px;font-size:.75rem;font-weight:600}
+.mag-lt3{background:#ffd54f;color:#000}.mag-3-5{background:#ff9800;color:#000}.mag-gt5{background:#f44336;color:#fff}
+
+/* Legend --------------------------------------------------------------------*/
+#legend{position:absolute;bottom:8px;right:8px;z-index:900;
+  background:#1a1a1acc;border:1px solid #333;border-radius:6px;padding:.6rem 1rem;font-size:.75rem;line-height:1.4}
+#legend span{display:flex;align-items:center;gap:.4rem;margin-top:.3rem}
+.swatch{width:14px;height:14px;border-radius:50%}
+.sw-tsu{width:14px;height:14px;background:url('data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" fill=\"%23ffeb3b\" viewBox=\"0 0 24 24\"%3E%3Cpath d=\"M2 16s3-2 6-2 6 2 6 2 3-2 6-2 6 2 6 2v4H2v-4z\"/%3E%3C/svg%3E') center/contain no-repeat;border-radius:0}
+.sw-24h{background:#fff}.sw-1h{background:#0ff}
+
+/* Harita kontrollerini gizle */
+.leaflet-control-container{display:none}
+</style>
+</head>
+<body>
+
+<div id="map">
+  <div id="searchBar"><input id="search" placeholder="Yer / M>4.5…" autocomplete="off"></div>
+  <ul id="panel"></ul>
+  <div id="legend">
+    <strong>Açıklama</strong>
+    <span><div class="swatch mag-gt5"></div> M≥5 renk</span>
+    <span><div class="swatch mag-3-5"></div> 3≤M&lt;5</span>
+    <span><div class="swatch mag-lt3"></div> M&lt;3</span>
+    <span><div class="sw-24h"></div> &lt;24 saat halkası</span>
+    <span><div class="sw-1h"></div> &lt;1 saat iç nokta</span>
+    <span><div class="sw-tsu"></div> Tsunami uyarı</span>
+    <span style="height:2px;width:20px;background:#00bfff"></span> Fay hattı
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+(async()=>{
+  /* Harita -----------------------------------------------------------------*/
+  const map=L.map('map',{zoomControl:false,attributionControl:false,preferCanvas:true})
+             .setView([20,0],2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',
+              {maxZoom:19,noWrap:true,updateWhenIdle:true,keepBuffer:4}).addTo(map);
+
+  const cluster=L.markerClusterGroup({disableClusteringAtZoom:6,chunkedLoading:true});
+  map.addLayer(cluster);
+
+  /* Fay hattı --------------------------------------------------------------*/
+  fetch('https://raw.githubusercontent.com/fraxen/tectonicplates/master/GeoJSON/PB2002_boundaries.json')
+    .then(r=>r.json())
+    .then(gjson=>L.geoJSON(gjson,{style:{color:'#00bfff',weight:1,opacity:.6}}).addTo(map));
+
+  /* DOM --------------------------------------------------------------------*/
+  const search=document.getElementById('search');
+  const panel =document.getElementById('panel');
+
+  /* Veri kaynakları --------------------------------------------------------*/
+  const USGS='https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.geojson';
+  const AFAD='https://api.orhanaydogdu.com.tr/deprem/kandilli/live';
+
+  const col=m=>m>=5?'#f44336':m>=3?'#ff9800':'#ffd54f';
+  const cls=m=>m>=5?'mag-gt5':m>=3?'mag-3-5':'mag-lt3';
+
+  let entries=[]; // {feat, marker, li}
+
+  /* Veri çek ---------------------------------------------------------------*/
+  async function fetchAll(){
+    const [u,a]=await Promise.allSettled([
+      fetch(USGS).then(r=>r.json()),
+      fetch(AFAD).then(r=>r.json())
+    ]);
+    let arr=[];
+    if(u.status==='fulfilled') arr=u.value.features;
+    if(a.status==='fulfilled'){
+      arr=arr.concat(a.value.result.map(x=>({
+        geometry:{type:'Point',coordinates:[+x.longitude,+x.latitude,+x.depth]},
+        properties:{mag:+x.mag,place:x.title,time:new Date(x.date).getTime(),tsunami:0}
+      })));
+    }
+    return arr.sort((p,q)=>q.properties.time-p.properties.time).slice(0,1200);
+  }
+
+  /* Marker + liste --------------------------------------------------------*/
+  function render(quakes){
+    cluster.clearLayers(); panel.innerHTML=''; entries=[];
+    const frag=document.createDocumentFragment();
+    const now=Date.now();
+    quakes.forEach(f=>{
+      const [lon,lat]=f.geometry.coordinates;
+      const {mag,place,time,depth=0,tsunami=0}=f.properties;
+
+      /* Ana nokta */
+      const base=L.circleMarker([lat,lon],{
+        radius:mag*2,fillColor:col(mag),color:'#000',weight:1,fillOpacity:.9
+      });
+
+      /* Derinlik halkası (stroke genişliği derinliğe göre) */
+      const ring=L.circleMarker([lat,lon],{
+        radius:mag*2.6,fillOpacity:0,weight:depthStyle(depth),color:depthColor(depth)
+      });
+
+      /* Son 24 h beyaz halka */
+      const recent= now-time<86400000 ? L.circleMarker([lat,lon],
+        {radius:mag*3,fillOpacity:0,weight:1,color:'#fff',dashArray:'2 2'}) : null;
+
+      /* Son 1 h iç nokta */
+      const nowDot= now-time<3600000 ? L.circleMarker([lat,lon],
+        {radius:2,fillColor:'#0ff',color:'#0ff',weight:0}) : null;
+
+      /* Tsunami ikonu */
+      const tsuMarker= tsunami==1 ? L.marker([lat,lon],{
+        icon:L.divIcon({className:'',html:'🌊',iconSize:[16,16],iconAnchor:[8,8]})
+      }) : null;
+
+      const group=L.featureGroup([base,ring,recent,nowDot,tsuMarker].filter(Boolean));
+      group.bindPopup(`<b>${place}</b><br>M ${mag} - Derinlik ${depth} km<br>${new Date(time).toLocaleString()}`);
+      cluster.addLayer(group);
+
+      const li=document.createElement('li');
+      li.innerHTML=`<span>${new Date(time).toLocaleTimeString()}</span>
+                    <span class="badge ${cls(mag)}">M${mag}</span>
+                    <span style="flex:1;text-align:right">${place}</span>`;
+      li.onclick=()=>group.openPopup();
+      frag.appendChild(li);
+      entries.push({feat:f,node:group,li});
+    });
+    panel.appendChild(frag);
+  }
+
+  /* Derinlik stil ----------------------------------------------------------*/
+  function depthStyle(d){
+    if(d>300) return 3;
+    if(d>100) return 2;
+    return 1;
+  }
+  function depthColor(d){
+    if(d>300) return '#7158ff';
+    if(d>100) return '#3f8cff';
+    return '#00b7ff';
+  }
+
+  /* Arama ------------------------------------------------------------------*/
+  function filter(q){
+    q=q.trim().toLowerCase();
+    const magRe=q.match(/m\s*([<>]=?)\s*(\d+(\.\d+)?)/i);let cmp,val;
+    if(magRe){cmp=magRe[1];val=parseFloat(magRe[2]);}
+    let any=false;
+    entries.forEach(({feat,node,li})=>{
+      const txt=li.textContent.toLowerCase();
+      let ok=true;
+      if(magRe){
+        const m=feat.properties.mag;
+        ok=cmp==='>'?m>val:cmp==='>='?m>=val:cmp==='<='?m<=val:cmp==='<'?m<val:true;
+      }else if(q){ok=txt.includes(q);}
+      li.style.display=ok?'':'none';
+      if(ok) cluster.addLayer(node); else cluster.removeLayer(node);
+      any=any||ok;
+    });
+    panel.classList.toggle('show',any&&(q||magRe));
+  }
+  search.addEventListener('input',e=>filter(e.target.value));
+
+  async function update(){render(await fetchAll());}
+  await update(); setInterval(update,180000); // 3 dk
+})();
+</script>
+</body>
+</html>
